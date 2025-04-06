@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:riverpod_test/database_helper.dart';
 
 // アプリ全体でRiverpodを利用するためにProviderScopeでラップ
 void main() {
+  // アプリ全体でRiverpodの状態管理を利用するため、main()でProviderScopeでMyAppをラップ
   runApp(ProviderScope(child: MyApp()));
 }
 
@@ -31,7 +33,26 @@ class Todo {
     this.completed = false,
   });
 
-  // 状態更新用のcopyWithメソッド
+  //※ SQLiteではオブジェクトを保存する際、Map形式（キーと値）に変換する必要がある
+  // Map形式に変換（SQLiteのINSERTやUPDATEで利用）
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'title': title,
+      'completed': completed ? 1 : 0, // SQLiteには数値で保存
+    };
+  }
+
+  // MapからTodoインスタンスを生成
+  factory Todo.fromMap(Map<String, dynamic> map) {
+    return Todo(
+      id: map['id'],
+      title: map['title'],
+      completed: map['completed'] == 1,
+    );
+  }
+
+  // 状態更新用のcopyWithメソッド 状態変更時に新しいインスタンスを生成
   Todo copyWith({String? id, String? title, bool? completed}) {
     return Todo(
       id: id ?? this.id,
@@ -42,28 +63,44 @@ class Todo {
 }
 
 // StateNotifierでTodoリストの状態を管理
+// Todoの追加・状態切替・削除のロジックを実装し、StateNotifierProviderでプロバイダーとして公開
+// データベースからタスクを読み込み、追加・更新・削除の際にSQLiteへ反映する
 class TodoListNotifier extends StateNotifier<List<Todo>> {
-  TodoListNotifier() : super([]);
+  TodoListNotifier() : super([]) {
+    _init();
+  }
+
+  // DBから既存のTodoを読み込む
+  Future<void> _init() async {
+    final todos = await TodoDatabase.instance.getTodos();
+    state = todos;
+  }
 
   // Todoの追加
-  void addTodo(String title) {
+  Future<void> addTodo(String title) async {
     final todo = Todo(
       id: DateTime.now().toIso8601String(),
       title: title,
     );
+    await TodoDatabase.instance.insertTodo(todo);
     state = [...state, todo];
   }
 
-  // Todoの完了/未完了を切り替え
-  void toggleTodo(String id) {
-    state = [
-      for (final todo in state)
-        if (todo.id == id) todo.copyWith(completed: !todo.completed) else todo
-    ];
+  // Todoの完了/未完了の切り替え
+  Future<void> toggleTodo(String id) async {
+    state = await Future.wait(state.map((todo) async {
+      if (todo.id == id) {
+        final newTodo = todo.copyWith(completed: !todo.completed);
+        await TodoDatabase.instance.updateTodo(newTodo);
+        return newTodo;
+      }
+      return todo;
+    }));
   }
 
   // Todoの削除
-  void removeTodo(String id) {
+  Future<void> removeTodo(String id) async {
+    await TodoDatabase.instance.deleteTodo(id);
     state = state.where((todo) => todo.id != id).toList();
   }
 }
@@ -74,7 +111,7 @@ final todoListProvider =
   return TodoListNotifier();
 });
 
-// Todoリストの画面
+// Todoリストの画面 ref.watch(todoListProvider)で現在のTodoリストを取得
 class TodoListPage extends ConsumerStatefulWidget {
   const TodoListPage({Key? key}) : super(key: key);
 
@@ -93,7 +130,7 @@ class _TodoListPageState extends ConsumerState<TodoListPage> {
 
   @override
   Widget build(BuildContext context) {
-    // ProviderからTodoリストを取得
+    // ProviderからTodoリストを取得 ref.watch(todoListProvider)で現在のリストを取得
     final todos = ref.watch(todoListProvider);
 
     return Scaffold(
